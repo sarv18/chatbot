@@ -1,0 +1,41 @@
+version: '3.8'
+
+services:
+  chatbot-api:
+    build: ./api
+    container_name: chatbot-api
+    ports:
+      - "8000:8000"
+    environment:
+      - APP_ENV=local
+      - DEBUG=True
+      - PORT=8000
+      - DEFAULT_INDEX=local-kb
+      - CHROMA_PERSIST_DIR=/app/ingestion/chroma_db
+      - API_KEY=local-dev-key
+      - MOCK_AGENT_ENABLED=True
+    volumes:
+      - ./ingestion/chroma_db:/app/ingestion/chroma_db
+      - ./ingestion/data:/app/ingestion/data
+    depends_on:
+      - chatbot-frontend
+    networks:
+      - chatbot-net
+
+  chatbot-frontend:
+    build: ./frontend
+    container_name: chatbot-frontend
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_API_BASE_URL=http://localhost:8000
+    volumes:
+      - ./frontend/src:/app/src
+    depends_on:
+      - chatbot-api
+    networks:
+      - chatbot-net
+
+networks:
+  chatbot-net:
+    driver: bridge
