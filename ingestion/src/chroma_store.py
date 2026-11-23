@@ -1,30 +1,21 @@
-"""Chroma vector store for local knowledge base."""
+"""Simple in-memory KB store for local development (no chromadb dependency)."""
 import os
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
-import chromadb
-from chromadb.config import Settings
-
-from app.config import CHROMA_PERSIST_DIR
-
 
 class ChromaKB:
-    """Local ChromaDB knowledge base for document chunks."""
+    """Local in-memory knowledge base for document chunks."""
 
     def __init__(self, persist_dir: Optional[str] = None):
-        self.persist_dir = persist_dir or CHROMA_PERSIST_DIR
-        os.makedirs(self.persist_dir, exist_ok=True)
+        self.persist_dir = persist_dir
+        self._collections: Dict[str, Dict[str, Dict]] = {}
+        self._default_collection = "local-kb"
+        self._ensure_collection(self._default_collection)
 
-        self.client = chromadb.PersistentClient(
-            path=self.persist_dir,
-            settings=Settings(anonymized_telemetry=False),
-        )
-        # Default collection for local development
-        self.collection = self.client.get_or_create_collection(
-            name="local-kb",
-            metadata={"description": "Local KB for chatbot development"},
-        )
+    def _ensure_collection(self, name: str):
+        if name not in self._collections:
+            self._collections[name] = {}
 
     def add_chunk(
         self,
@@ -44,11 +35,10 @@ class ChromaKB:
         if metadata:
             meta.update(metadata)
 
-        col.add(
-            documents=[text],
-            metadatas=[meta],
-            ids=[chunk_id],
-        )
+        col[chunk_id] = {
+            "text": text,
+            "metadata": meta,
+        }
         return chunk_id
 
     def search(
@@ -57,52 +47,53 @@ class ChromaKB:
         n_results: int = 5,
         collection_name: Optional[str] = None,
     ) -> List[Tuple[str, Dict[str, Any], Optional[float]]]:
-        """Search the knowledge base. Returns (document, metadata, distance)."""
+        """Search the knowledge base (simple keyword matching)."""
         col = self._get_collection(collection_name)
-        if col.count() == 0:
+        if not col:
             return []
 
-        results = col.query(
-            query_texts=[query],
-            n_results=n_results,
-        )
+        query_lower = query.lower()
+        results = []
 
-        docs = results.get("documents", [[]])[0]
-        metas = results.get("metadatas", [[]])[0]
-        dists = results.get("distances", [[]])[0]
+        for chunk_id, data in col.items():
+            text = data["text"]
+            meta = data["metadata"]
+            # Simple relevance: count query words in text
+            relevance = sum(1 for word in query_lower.split() if word in text.lower())
+            if relevance > 0:
+                distance = 1.0 - (relevance / max(len(query_lower.split()), 1))
+                results.append((text, meta, distance))
 
-        return list(zip(docs, metas, dists))
+        # Sort by relevance (lower distance = more relevant)
+        results.sort(key=lambda x: x[2] if x[2] is not None else 1.0)
+        return results[:n_results]
 
     def get_collection(self, name: str):
         """Get or create a collection by name."""
-        return self.client.get_or_create_collection(
-            name=name,
-            metadata={"description": f"KB collection: {name}"},
-        )
+        self._ensure_collection(name)
+        return self._collections[name]
 
     def _get_collection(self, name: Optional[str] = None):
-        if name and name != "local-kb":
-            return self.get_collection(name)
-        return self.collection
+        if name and name != self._default_collection:
+            self._ensure_collection(name)
+            return self._collections[name]
+        return self._collections[self._default_collection]
 
     def get_count(self, collection_name: Optional[str] = None) -> int:
         """Get total chunk count."""
         col = self._get_collection(collection_name)
-        return col.count()
+        return len(col)
 
     def clear(self, collection_name: Optional[str] = None) -> int:
         """Clear all chunks from a collection."""
         col = self._get_collection(collection_name)
-        if col.count() > 0:
-            # Chroma doesn't have a direct clear, so delete all IDs
-            all_ids = col.get()["ids"]
-            if all_ids:
-                col.delete(ids=all_ids)
-        return 0
+        count = len(col)
+        col.clear()
+        return count
 
     def list_collections(self) -> List[str]:
         """List all collection names."""
-        return [c.name for c in self.client.list_collections()]
+        return list(self._collections.keys())
 
 
 # Convenience singleton
